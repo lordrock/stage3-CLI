@@ -44,5 +44,5 @@ insighta profiles export --format csv
 Set backend URL:
 
 ```
-INSIGHTA_API_URL=https://stage3-backend.onrender.com
+INSIGHTA_API_URL=https://stage3-backendnew.onrender.com/
 ```
