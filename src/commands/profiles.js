@@ -1,209 +1,157 @@
-const chalk = require("chalk");
-const ora = require("ora");
+const axios = require("axios");
 const Table = require("cli-table3");
 
-const { createApiClient } = require("../utils/apiClient");
+const API_BASE_URL =
+  process.env.INSIGHTA_API_URL ||
+  "https://stage3-backendnew.onrender.com";
 
-const buildListParams = (options) => {
-  const params = {};
+// 👉 Helper to load saved credentials
+const loadCredentials = () => {
+  try {
+    const fs = require("fs");
+    const path = require("path");
 
-  if (options.gender) params.gender = options.gender;
-  if (options.country) params.country_id = options.country;
-  if (options.ageGroup) params.age_group = options.ageGroup;
-  if (options.minAge) params.min_age = options.minAge;
-  if (options.maxAge) params.max_age = options.maxAge;
-  if (options.minGenderProbability) {
-    params.min_gender_probability = options.minGenderProbability;
+    const filePath = path.join(
+      require("os").homedir(),
+      ".insighta",
+      "credentials.json"
+    );
+
+    if (!fs.existsSync(filePath)) {
+      console.log("❌ Not logged in. Run: insighta login");
+      process.exit(1);
+    }
+
+    return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  } catch (err) {
+    console.log("❌ Failed to load credentials");
+    process.exit(1);
   }
-  if (options.minCountryProbability) {
-    params.min_country_probability = options.minCountryProbability;
-  }
-  if (options.sortBy) params.sort_by = options.sortBy;
-  if (options.order) params.order = options.order;
-  if (options.page) params.page = options.page;
-  if (options.limit) params.limit = options.limit;
-
-  return params;
 };
 
-const printProfilesTable = (profiles) => {
+// 👉 Helper for API requests
+const apiRequest = async (url, method = "GET", data = null) => {
+  const creds = loadCredentials();
+
+  try {
+    const res = await axios({
+      url: `${API_BASE_URL}${url}`,
+      method,
+      data,
+      headers: {
+        Authorization: `Bearer ${creds.access_token}`,
+        "X-API-Version": "1"
+      }
+    });
+
+    return res.data;
+  } catch (err) {
+    console.error("❌ API Error:", err.response?.data || err.message);
+    process.exit(1);
+  }
+};
+
+// 👉 Format table output
+const printTable = (profiles) => {
   const table = new Table({
-    head: [
-      "Name",
-      "Gender",
-      "Age",
-      "Group",
-      "Country",
-      "G. Prob",
-      "C. Prob"
-    ]
+    head: ["ID", "Name", "Gender", "Age", "Country"]
   });
 
-  profiles.forEach((profile) => {
+  profiles.forEach((p) => {
     table.push([
-      profile.name,
-      profile.gender,
-      profile.age,
-      profile.age_group,
-      `${profile.country_name} (${profile.country_id})`,
-      profile.gender_probability,
-      profile.country_probability
+      p.id,
+      p.name,
+      p.gender || "-",
+      p.age || "-",
+      p.country_name || "-"
     ]);
   });
 
   console.log(table.toString());
 };
 
+// 👉 MAIN FUNCTION
 const registerProfileCommands = (program) => {
   const profiles = program
     .command("profiles")
     .description("Manage and query profiles");
 
+  // 📌 LIST
   profiles
-  .command("get")
-  .description("Get a single profile by ID")
-  .argument("<id>", "Profile ID")
-  .action(async (id) => {
-    const spinner = ora("Fetching profile...").start();
-
-    try {
-      const api = createApiClient();
-
-      const response = await api.get(`/api/profiles/${id}`);
-
-      spinner.succeed("Profile found");
-
-      printProfilesTable([response.data.data]);
-    } catch (error) {
-      spinner.fail("Failed to fetch profile");
-
-      const message =
-        error.response?.data?.message ||
-        "Unable to fetch profile. Try logging in again.";
-
-      console.error(chalk.red(message));
-    }
-  });
-
-profiles
-  .command("search")
-  .description("Search profiles using natural language")
-  .argument("<query>", "Natural language query")
-  .option("--page <page>", "Page number")
-  .option("--limit <limit>", "Page limit")
-  .action(async (query, options) => {
-    const spinner = ora("Searching profiles...").start();
-
-    try {
-      const api = createApiClient();
-
-      const response = await api.get("/api/profiles/search", {
-        params: {
-          q: query,
-          page: options.page,
-          limit: options.limit
-        }
-      });
-
-      spinner.succeed(
-        `Found ${response.data.data.length} profiles out of ${response.data.total}`
+    .command("list")
+    .option("--limit <number>", "Limit results", "5")
+    .action(async (opts) => {
+      const res = await apiRequest(
+        `/api/profiles?limit=${opts.limit}`
       );
 
-      printProfilesTable(response.data.data);
+      printTable(res.data);
+    });
 
-      console.log(
-        chalk.gray(
-          `Page ${response.data.page}/${response.data.total_pages} | Limit ${response.data.limit}`
-        )
+  // 📌 SEARCH
+  profiles
+    .command("search")
+    .argument("<query>", "Search query")
+    .action(async (query) => {
+      const res = await apiRequest(
+        `/api/profiles/search?q=${encodeURIComponent(query)}`
       );
-    } catch (error) {
-      spinner.fail("Search failed");
 
-      const message =
-        error.response?.data?.message ||
-        "Unable to search profiles. Try logging in again.";
+      printTable(res.data);
+    });
 
-      console.error(chalk.red(message));
-    }
-  });
+  // 📌 GET SINGLE
+  profiles
+    .command("get")
+    .argument("<id>", "Profile ID")
+    .action(async (id) => {
+      const res = await apiRequest(`/api/profiles/${id}`);
+      console.log(res.data);
+    });
 
+  // 📌 CREATE (admin only)
+  profiles
+    .command("create")
+    .requiredOption("--name <name>", "Profile name")
+    .action(async (opts) => {
+      const res = await apiRequest(
+        "/api/profiles",
+        "POST",
+        { name: opts.name }
+      );
+
+      console.log("✅ Created:", res.data);
+    });
+
+  // 📌 EXPORT CSV
+  profiles
+    .command("export")
+    .option("--format <type>", "Format", "csv")
+    .action(async (opts) => {
+      const creds = loadCredentials();
+
+      try {
+        const res = await axios({
+          url: `${API_BASE_URL}/api/profiles/export?format=${opts.format}`,
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${creds.access_token}`,
+            "X-API-Version": "1"
+          },
+          responseType: "stream"
+        });
+
+        const fs = require("fs");
+        const file = fs.createWriteStream("profiles.csv");
+
+        res.data.pipe(file);
+
+        console.log("📁 CSV exported as profiles.csv");
+      } catch (err) {
+        console.error("❌ Export failed");
+      }
+    });
 };
-
-profiles
-  .command("create")
-  .description("Create a new profile")
-  .requiredOption("--name <name>", "Profile name")
-  .action(async (options) => {
-    const spinner = ora("Creating profile...").start();
-
-    try {
-      const api = createApiClient();
-
-      const response = await api.post("/api/profiles", {
-        name: options.name
-      });
-
-      spinner.succeed("Profile created");
-
-      printProfilesTable([response.data.data]);
-    } catch (error) {
-      spinner.fail("Failed to create profile");
-
-      const message =
-        error.response?.data?.message ||
-        "Unable to create profile. Admin access may be required.";
-
-      console.error(chalk.red(message));
-    }
-  });
-
-  profiles
-  .command("export")
-  .description("Export profiles as CSV")
-  .requiredOption("--format <format>", "Export format, currently csv")
-  .option("--gender <gender>", "Filter by gender")
-  .option("--country <country>", "Filter by country code, e.g. NG")
-  .option("--age-group <ageGroup>", "Filter by age group")
-  .option("--min-age <minAge>", "Minimum age")
-  .option("--max-age <maxAge>", "Maximum age")
-  .option("--sort-by <field>", "Sort by age, created_at, or gender_probability")
-  .option("--order <order>", "asc or desc")
-  .action(async (options) => {
-    const fs = require("fs");
-    const path = require("path");
-
-    const spinner = ora("Exporting profiles...").start();
-
-    try {
-      const api = createApiClient();
-
-      const params = {
-        format: options.format,
-        ...buildListParams(options)
-      };
-
-      const response = await api.get("/api/profiles/export", {
-        params,
-        responseType: "text"
-      });
-
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const fileName = `profiles_${timestamp}.csv`;
-      const filePath = path.join(process.cwd(), fileName);
-
-      fs.writeFileSync(filePath, response.data, "utf-8");
-
-      spinner.succeed(`CSV exported to ${filePath}`);
-    } catch (error) {
-      spinner.fail("Export failed");
-
-      const message =
-        error.response?.data?.message ||
-        "Unable to export profiles. Try logging in again.";
-
-      console.error(chalk.red(message));
-    }
-  });
 
 module.exports = {
   registerProfileCommands
